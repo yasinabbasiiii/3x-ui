@@ -4,39 +4,44 @@ package database
 
 import (
 	"bytes"
+	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"os"
 	"path"
 	"slices"
+	"strings"
 
+	mysqlDriver "github.com/go-sql-driver/mysql"
 	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/util/crypto"
 	"github.com/mhsanaei/3x-ui/v2/xray"
 
+	"gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
 var db *gorm.DB
+var xuiDB *gorm.DB
+var xuiMySQLEnabled bool
 
 const (
 	defaultUsername = "admin"
 	defaultPassword = "admin"
 )
 
-func initModels() error {
+func initPanelModels() error {
 	models := []any{
 		&model.User{},
-		&model.Inbound{},
 		&model.OutboundTraffics{},
 		&model.Setting{},
 		&model.InboundClientIps{},
-		&xray.ClientTraffic{},
 		&model.HistoryOfSeeders{},
 	}
 	for _, model := range models {
@@ -46,6 +51,91 @@ func initModels() error {
 		}
 	}
 	return nil
+}
+
+func initXUIModels() error {
+	if xuiDB == nil {
+		return errors.New("xui database is not initialized")
+	}
+	models := []any{
+		&model.Inbound{},
+		&xray.ClientTraffic{},
+	}
+	for _, model := range models {
+		if err := xuiDB.AutoMigrate(model); err != nil {
+			log.Printf("Error auto migrating xui model: %v", err)
+			return err
+		}
+	}
+	return nil
+}
+
+// bootstrapXUIDataFromSQLite copies existing x-ui runtime tables from SQLite to MySQL once,
+// when MySQL is enabled and target tables are empty.
+func bootstrapXUIDataFromSQLite() error {
+	if !xuiMySQLEnabled || xuiDB == nil || db == nil {
+		return nil
+	}
+
+	var inboundCount int64
+	if err := xuiDB.Model(&model.Inbound{}).Count(&inboundCount).Error; err != nil {
+		return err
+	}
+	var trafficCount int64
+	if err := xuiDB.Model(&xray.ClientTraffic{}).Count(&trafficCount).Error; err != nil {
+		return err
+	}
+	if inboundCount > 0 || trafficCount > 0 {
+		return nil
+	}
+
+	if !db.Migrator().HasTable(&model.Inbound{}) || !db.Migrator().HasTable(&xray.ClientTraffic{}) {
+		return nil
+	}
+
+	var inbounds []model.Inbound
+	if err := db.Model(&model.Inbound{}).Find(&inbounds).Error; err != nil {
+		return err
+	}
+	var traffics []xray.ClientTraffic
+	if err := db.Model(&xray.ClientTraffic{}).Find(&traffics).Error; err != nil {
+		return err
+	}
+
+	if len(inbounds) > 0 {
+		if err := xuiDB.Create(&inbounds).Error; err != nil {
+			return err
+		}
+	}
+	if len(traffics) > 0 {
+		if err := xuiDB.Create(&traffics).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureMySQLDatabase creates the target database if it does not exist.
+func ensureMySQLDatabase(dsn string) error {
+	cfg, err := mysqlDriver.ParseDSN(dsn)
+	if err != nil {
+		return err
+	}
+	if cfg.DBName == "" {
+		return nil
+	}
+
+	dbName := cfg.DBName
+	cfg.DBName = ""
+	sqlDB, err := sql.Open("mysql", cfg.FormatDSN())
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+
+	escapedDBName := strings.ReplaceAll(dbName, "`", "``")
+	_, err = sqlDB.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", escapedDBName))
+	return err
 }
 
 // initUser creates a default admin user if the users table is empty.
@@ -143,7 +233,29 @@ func InitDB(dbPath string) error {
 		return err
 	}
 
-	if err := initModels(); err != nil {
+	// SQLite keeps core panel tables.
+	if err := initPanelModels(); err != nil {
+		return err
+	}
+
+	// inbounds + client_traffics may optionally live in MySQL.
+	xuiDB = db
+	xuiMySQLEnabled = false
+	if dsn := config.GetXUIMySQLDSN(); dsn != "" {
+		if err := ensureMySQLDatabase(dsn); err != nil {
+			return err
+		}
+		xuiDB, err = gorm.Open(mysql.Open(dsn), c)
+		if err != nil {
+			return err
+		}
+		xuiMySQLEnabled = true
+	}
+
+	if err := initXUIModels(); err != nil {
+		return err
+	}
+	if err := bootstrapXUIDataFromSQLite(); err != nil {
 		return err
 	}
 
@@ -160,19 +272,46 @@ func InitDB(dbPath string) error {
 
 // CloseDB closes the database connection if it exists.
 func CloseDB() error {
+	var closeErr error
+
+	if xuiDB != nil && xuiDB != db {
+		sqlDB, err := xuiDB.DB()
+		if err != nil {
+			return err
+		}
+		if err := sqlDB.Close(); err != nil {
+			closeErr = err
+		}
+	}
+
 	if db != nil {
 		sqlDB, err := db.DB()
 		if err != nil {
 			return err
 		}
-		return sqlDB.Close()
+		if err := sqlDB.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
 	}
-	return nil
+	return closeErr
 }
 
 // GetDB returns the global GORM database instance.
 func GetDB() *gorm.DB {
 	return db
+}
+
+// GetXUIDB returns the database for inbounds/client_traffics.
+func GetXUIDB() *gorm.DB {
+	if xuiDB != nil {
+		return xuiDB
+	}
+	return db
+}
+
+// IsXUIMySQLEnabled reports whether inbounds/client_traffics are stored in MySQL.
+func IsXUIMySQLEnabled() bool {
+	return xuiMySQLEnabled
 }
 
 // IsNotFound checks if the given error is a GORM record not found error.

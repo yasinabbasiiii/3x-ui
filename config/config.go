@@ -100,6 +100,12 @@ func GetDBPath() string {
 	return fmt.Sprintf("%s/%s.db", GetDBFolderPath(), GetName())
 }
 
+// GetXUIMySQLDSN returns optional MySQL DSN for storing x-ui runtime tables
+// (inbounds and client_traffics). If empty, SQLite is used for all tables.
+func GetXUIMySQLDSN() string {
+	return strings.TrimSpace(os.Getenv("XUI_MYSQL_DSN"))
+}
+
 // GetLogFolder returns the path to the log folder based on environment variables or platform defaults.
 func GetLogFolder() string {
 	logFolderPath := os.Getenv("XUI_LOG_FOLDER")
