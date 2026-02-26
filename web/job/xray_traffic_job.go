@@ -21,12 +21,18 @@ type XrayTrafficJob struct {
 	inboundService  service.InboundService
 	outboundService service.OutboundService
 	mu              sync.Mutex
-	lastSlot        int64
+	nextRunAt       int64
+	scheduleOffset  int
+	scheduleIntv    int
 }
 
 // NewXrayTrafficJob creates a new traffic collection job instance.
 func NewXrayTrafficJob() *XrayTrafficJob {
-	return &XrayTrafficJob{lastSlot: -1}
+	return &XrayTrafficJob{
+		nextRunAt:      -1,
+		scheduleOffset: -1,
+		scheduleIntv:   -1,
+	}
 }
 
 // Run collects traffic statistics from Xray and updates the database, triggering restart if needed.
@@ -37,19 +43,25 @@ func (j *XrayTrafficJob) Run() {
 	}
 
 	now := time.Now().Unix()
-	delta := now - int64(offset)
-	if delta < 0 || delta%int64(interval) != 0 {
-		return
-	}
-	slot := delta / int64(interval)
-
+	shouldRun := false
 	j.mu.Lock()
-	if j.lastSlot == slot {
-		j.mu.Unlock()
+	// Recalculate schedule when env-based values change or this is first run.
+	if j.nextRunAt < 0 || j.scheduleIntv != interval || j.scheduleOffset != offset {
+		j.scheduleIntv = interval
+		j.scheduleOffset = offset
+		j.nextRunAt = nextScheduledUnix(now, int64(interval), int64(offset))
+	}
+	if now >= j.nextRunAt {
+		shouldRun = true
+		// Advance to the next future slot; if delayed, skip missed slots safely.
+		for j.nextRunAt <= now {
+			j.nextRunAt += int64(interval)
+		}
+	}
+	j.mu.Unlock()
+	if !shouldRun {
 		return
 	}
-	j.lastSlot = slot
-	j.mu.Unlock()
 
 	if !j.xrayService.IsXrayRunning() {
 		return
@@ -116,6 +128,21 @@ func (j *XrayTrafficJob) Run() {
 		websocket.BroadcastOutbounds(updatedOutbounds)
 	}
 
+}
+
+func nextScheduledUnix(now, interval, offset int64) int64 {
+	if interval <= 0 {
+		return now
+	}
+	if now < offset {
+		return offset
+	}
+	delta := now - offset
+	rem := delta % interval
+	if rem == 0 {
+		return now
+	}
+	return now + (interval - rem)
 }
 
 func (j *XrayTrafficJob) informTrafficToExternalAPI(inboundTraffics []*xray.Traffic, clientTraffics []*xray.ClientTraffic) {

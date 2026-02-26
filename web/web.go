@@ -314,11 +314,11 @@ func (s *Server) startTask() {
 
 	go func() {
 		time.Sleep(time.Second * 5)
-		// Trigger every second; actual save cadence is controlled in job by
+		// Trigger every 10 seconds; actual save cadence is controlled in job by
 		// XUI_TRAFFIC_SAVE_INTERVAL_SEC and XUI_TRAFFIC_SAVE_OFFSET_SEC.
 		interval, offset := config.GetTrafficSaveSchedule()
 		logger.Infof("Xray traffic save schedule: interval=%ds offset=%ds", interval, offset)
-		s.cron.AddJob("@every 1s", job.NewXrayTrafficJob())
+		s.cron.AddJob("@every 30s", job.NewXrayTrafficJob())
 	}()
 
 	// inbound_client_ips feature is disabled
