@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -104,6 +105,29 @@ func GetDBPath() string {
 // (inbounds and client_traffics). If empty, SQLite is used for all tables.
 func GetXUIMySQLDSN() string {
 	return strings.TrimSpace(os.Getenv("XUI_MYSQL_DSN"))
+}
+
+// GetTrafficSaveSchedule returns traffic save schedule based on environment variables.
+// interval is in seconds and defaults to 600 (10 minutes).
+// offset is normalized into [0, interval-1] and defaults to 0.
+func GetTrafficSaveSchedule() (interval int, offset int) {
+	interval = 600
+	if v := strings.TrimSpace(os.Getenv("XUI_TRAFFIC_SAVE_INTERVAL_SEC")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			interval = parsed
+		}
+	}
+
+	offset = 0
+	if v := strings.TrimSpace(os.Getenv("XUI_TRAFFIC_SAVE_OFFSET_SEC")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			offset = parsed
+		}
+	}
+	if interval > 0 {
+		offset = ((offset % interval) + interval) % interval
+	}
+	return interval, offset
 }
 
 // GetLogFolder returns the path to the log folder based on environment variables or platform defaults.

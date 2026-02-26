@@ -314,8 +314,11 @@ func (s *Server) startTask() {
 
 	go func() {
 		time.Sleep(time.Second * 5)
-		// Statistics every 10 seconds, start the delay for 5 seconds for the first time, and staggered with the time to restart xray
-		s.cron.AddJob("@every 10s", job.NewXrayTrafficJob())
+		// Trigger every second; actual save cadence is controlled in job by
+		// XUI_TRAFFIC_SAVE_INTERVAL_SEC and XUI_TRAFFIC_SAVE_OFFSET_SEC.
+		interval, offset := config.GetTrafficSaveSchedule()
+		logger.Infof("Xray traffic save schedule: interval=%ds offset=%ds", interval, offset)
+		s.cron.AddJob("@every 1s", job.NewXrayTrafficJob())
 	}()
 
 	// inbound_client_ips feature is disabled

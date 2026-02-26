@@ -2,7 +2,10 @@ package job
 
 import (
 	"encoding/json"
+	"sync"
+	"time"
 
+	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 	"github.com/mhsanaei/3x-ui/v2/web/websocket"
@@ -17,15 +20,37 @@ type XrayTrafficJob struct {
 	xrayService     service.XrayService
 	inboundService  service.InboundService
 	outboundService service.OutboundService
+	mu              sync.Mutex
+	lastSlot        int64
 }
 
 // NewXrayTrafficJob creates a new traffic collection job instance.
 func NewXrayTrafficJob() *XrayTrafficJob {
-	return new(XrayTrafficJob)
+	return &XrayTrafficJob{lastSlot: -1}
 }
 
 // Run collects traffic statistics from Xray and updates the database, triggering restart if needed.
 func (j *XrayTrafficJob) Run() {
+	interval, offset := config.GetTrafficSaveSchedule()
+	if interval <= 0 {
+		return
+	}
+
+	now := time.Now().Unix()
+	delta := now - int64(offset)
+	if delta < 0 || delta%int64(interval) != 0 {
+		return
+	}
+	slot := delta / int64(interval)
+
+	j.mu.Lock()
+	if j.lastSlot == slot {
+		j.mu.Unlock()
+		return
+	}
+	j.lastSlot = slot
+	j.mu.Unlock()
+
 	if !j.xrayService.IsXrayRunning() {
 		return
 	}
@@ -33,6 +58,9 @@ func (j *XrayTrafficJob) Run() {
 	if err != nil {
 		return
 	}
+	logger.Infof("Traffic Count: %d", len(traffics))
+	logger.Infof("ClientTraffic Count: %d", len(clientTraffics))
+
 	err, needRestart0 := j.inboundService.AddTraffic(traffics, clientTraffics)
 	if err != nil {
 		logger.Warning("add inbound traffic failed:", err)
