@@ -2,6 +2,9 @@ package job
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/url"
+	"os"
 	"sync"
 	"time"
 
@@ -76,10 +79,12 @@ func (j *XrayTrafficJob) Run() {
 	err, needRestart0 := j.inboundService.AddTraffic(traffics, clientTraffics)
 	if err != nil {
 		logger.Warning("add inbound traffic failed:", err)
+		j.notifyTrafficSaveDBError("inbound", err)
 	}
 	err, needRestart1 := j.outboundService.AddTraffic(traffics, clientTraffics)
 	if err != nil {
 		logger.Warning("add outbound traffic failed:", err)
+		j.notifyTrafficSaveDBError("outbound", err)
 	}
 	if ExternalTrafficInformEnable, err := j.settingService.GetExternalTrafficInformEnable(); ExternalTrafficInformEnable {
 		j.informTrafficToExternalAPI(traffics, clientTraffics)
@@ -166,5 +171,55 @@ func (j *XrayTrafficJob) informTrafficToExternalAPI(inboundTraffics []*xray.Traf
 	defer fasthttp.ReleaseResponse(response)
 	if err := fasthttp.Do(request, response); err != nil {
 		logger.Warning("POST ExternalTrafficInformURI failed:", err)
+	}
+}
+
+func (j *XrayTrafficJob) notifyTrafficSaveDBError(scope string, saveErr error) {
+	if saveErr == nil {
+		return
+	}
+
+	botToken := config.GetTrafficDBErrorTgBotToken()
+	targetID := config.GetTrafficDBErrorTgUserID()
+	if botToken == "" || targetID == "" {
+		return
+	}
+
+	serverName, err := os.Hostname()
+	if err != nil || serverName == "" {
+		serverName = "unknown"
+	}
+
+	msg := fmt.Sprintf(
+		"Traffic Save DB Error\nServer: %s\nScope: %s\nError: %s",
+		serverName,
+		scope,
+		saveErr.Error(),
+	)
+
+	form := url.Values{}
+	form.Set("chat_id", targetID)
+	form.Set("text", msg)
+
+	request := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(request)
+	request.Header.SetMethod(fasthttp.MethodPost)
+	request.Header.SetContentType("application/x-www-form-urlencoded")
+	request.SetBodyString(form.Encode())
+	request.SetRequestURI(fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", url.PathEscape(botToken)))
+
+	response := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(response)
+
+	if err := fasthttp.DoTimeout(request, response, 10*time.Second); err != nil {
+		logger.Warning("send traffic db error to telegram failed:", err)
+		return
+	}
+	if response.StatusCode() < 200 || response.StatusCode() >= 300 {
+		logger.Warningf(
+			"send traffic db error to telegram failed: status=%d body=%s",
+			response.StatusCode(),
+			string(response.Body()),
+		)
 	}
 }

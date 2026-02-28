@@ -107,6 +107,28 @@ func GetXUIMySQLDSN() string {
 	return strings.TrimSpace(os.Getenv("XUI_MYSQL_DSN"))
 }
 
+// GetTrafficDBErrorTgBotToken returns Telegram bot token for traffic DB error alerts.
+// Supported env vars:
+// - XUI_TRAFFIC_ALERT_TG_BOT_TOKEN (preferred)
+// - XUI_TRAFFIC_ALERT_TG_BOT_ID (fallback alias)
+func GetTrafficDBErrorTgBotToken() string {
+	if token := strings.TrimSpace(os.Getenv("XUI_TRAFFIC_ALERT_TG_BOT_TOKEN")); token != "" {
+		return token
+	}
+	return strings.TrimSpace(os.Getenv("XUI_TRAFFIC_ALERT_TG_BOT_ID"))
+}
+
+// GetTrafficDBErrorTgUserID returns Telegram target user/chat id for traffic DB error alerts.
+// Supported env vars:
+// - XUI_TRAFFIC_ALERT_TG_USER_ID (preferred)
+// - XUI_TRAFFIC_ALERT_TG_CHAT_ID (fallback alias)
+func GetTrafficDBErrorTgUserID() string {
+	if userID := strings.TrimSpace(os.Getenv("XUI_TRAFFIC_ALERT_TG_USER_ID")); userID != "" {
+		return userID
+	}
+	return strings.TrimSpace(os.Getenv("XUI_TRAFFIC_ALERT_TG_CHAT_ID"))
+}
+
 // GetTrafficSaveSchedule returns traffic save schedule based on environment variables.
 // interval is in seconds and defaults to 600 (10 minutes).
 // offset is normalized into [0, interval-1] and defaults to 0.
